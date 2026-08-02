@@ -1,8 +1,8 @@
 """
 Data Analyst AI Agent (Free Gemini version)
 =============================================
-Ek AI-powered agent jo CSV/Excel/PDF/Word/PPT data ko clean, analyze, aur
-query karta hai natural language (Hinglish/English) instructions se.
+An AI-powered agent that cleans, analyzes, and queries CSV/Excel/PDF/Word/PPT
+data using natural language instructions.
 Uses Google Gemini's free tier (no billing needed).
 
 Setup:
@@ -34,6 +34,12 @@ from pptx import Presentation
 from pypdf import PdfReader
 
 MODEL = "gemini-flash-latest"  # always points to current Gemini Flash model
+
+# The agent's code, comments, and error messages are in English for
+# readability and portfolio presentation. Conversational replies (reports,
+# document answers, guides) are generated in Hinglish for accessibility,
+# per this instruction appended to relevant prompts.
+HINGLISH_INSTRUCTION = " Respond in Hinglish (a natural mix of Hindi and English, written in Latin/Roman script)."
 
 client = genai.Client()  # reads GEMINI_API_KEY from environment
 
@@ -91,13 +97,13 @@ def load_any_file(filepath: str):
     elif ext == ".pptx":
         return "text", read_pptx_text(filepath)
     else:
-        raise ValueError(f"File type '{ext}' abhi supported nahi hai.")
+        raise ValueError(f"File type '{ext}' is not supported yet.")
 
 
 def ask_about_text(text: str, question: str) -> str:
     """NL Q&A over non-tabular documents (PDF/Word/PPT)."""
     truncated = text[:15000]  # keep prompt reasonable
-    system_prompt = "Tum ek document analyst ho. User ke document content ke aadhar par uske sawaal ka Hinglish mein clear jawab do."
+    system_prompt = "You are a document analyst AI. Answer the user's question clearly, based on the document content provided." + HINGLISH_INSTRUCTION
     user_content = f"Document content:\n{truncated}\n\nQuestion: {question}"
     return call_llm(system_prompt, user_content)
 
@@ -111,7 +117,7 @@ def load_data(filepath: str) -> pd.DataFrame:
     elif filepath.endswith((".xlsx", ".xls")):
         df = pd.read_excel(filepath)
     else:
-        raise ValueError("Sirf CSV ya Excel files supported hain.")
+        raise ValueError("Only CSV or Excel files are supported.")
     return df
 
 
@@ -135,7 +141,7 @@ def auto_clean(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
     dup_count = df.duplicated().sum()
     if dup_count > 0:
         df = df.drop_duplicates()
-        log.append(f"{dup_count} duplicate rows hataye gaye")
+        log.append(f"Removed {dup_count} duplicate rows")
 
     # Try converting object columns that look numeric/date
     for col in str_cols:
@@ -145,15 +151,15 @@ def auto_clean(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
 
     after_rows = len(df)
     if after_rows != before_rows:
-        log.append(f"Empty rows/cols clean kiye: {before_rows} -> {after_rows} rows")
+        log.append(f"Cleaned empty rows/columns: {before_rows} -> {after_rows} rows")
 
     # Report missing values even if we didn't drop them (so the user isn't
-    # told "sab clean hai" when there's real missing data sitting there)
+    # told "everything's clean" when there's real missing data sitting there)
     missing = df.isna().sum()
     missing = missing[missing > 0]
     if not missing.empty:
         details = ", ".join(f"{col}: {cnt}" for col, cnt in missing.items())
-        log.append(f"Missing values mile (hataye nahi gaye, 'clean:' command se batao kya karna hai): {details}")
+        log.append(f"Missing values found (not removed, use 'clean:' to specify what to do): {details}")
 
     # Flag columns with inconsistent casing (e.g. 'North' vs 'north')
     for col in str_cols:
@@ -165,10 +171,10 @@ def auto_clean(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
         distinct = non_null.unique()
         distinct_lower = pd.Series(distinct).str.lower().unique()
         if len(distinct) > len(distinct_lower):
-            log.append(f"'{col}' mein inconsistent casing mili (jaise 'North'/'north') — 'clean:' se normalize karwa sakte ho")
+            log.append(f"'{col}' has inconsistent casing (e.g. 'North'/'north') — use 'clean:' to normalize")
 
     if not log:
-        log.append("Data pehle se hi clean tha, koi major issue nahi mila")
+        log.append("Data was already clean, no major issues found")
 
     return df, log
 
@@ -181,11 +187,11 @@ def custom_clean(df: pd.DataFrame, instruction: str):
     schema = f"Columns: {list(df.columns)}\nDtypes:\n{df.dtypes.to_string()}\nSample rows:\n{df.head(3).to_string()}"
 
     system_prompt = (
-        "Tum ek data cleaning AI ho. User ek pandas DataFrame `df` pe cleaning "
-        "instruction dega (Hinglish/English). Tumhe SIRF valid Python pandas "
-        "code dena hai jo `df` ko MODIFY kare aur naya df wapas `df` variable "
-        "mein hi store kare (e.g. df = df[...] ya df['col'] = ...). "
-        "Koi explanation, koi markdown fences, koi text nahi — sirf raw code."
+        "You are a data cleaning AI. The user will give a cleaning "
+        "instruction for a pandas DataFrame `df`. Respond with ONLY valid "
+        "Python pandas code that MODIFIES `df` and stores the new result "
+        "back in the `df` variable (e.g. df = df[...] or df['col'] = ...). "
+        "No explanation, no markdown fences, no text — just raw code."
     )
 
     user_content = f"DataFrame info:\n{schema}\n\nCleaning instruction: {instruction}\n\nCode:"
@@ -196,9 +202,9 @@ def custom_clean(df: pd.DataFrame, instruction: str):
     try:
         exec(code, {"__builtins__": {}}, local_vars)
         new_df = local_vars.get("df", df)
-        return new_df, f"Cleaning applied:\n{code}\n\nNaya shape: {new_df.shape}"
+        return new_df, f"Cleaning applied:\n{code}\n\nNew shape: {new_df.shape}"
     except Exception as e:
-        return df, f"Error aaya cleaning code chalane mein:\n{code}\n\n{e}"
+        return df, f"Error running cleaning code:\n{code}\n\n{e}"
 
 
 # ----------------------------------------------------------------------
@@ -208,10 +214,10 @@ def ask_question(df: pd.DataFrame, question: str) -> str:
     schema = f"Columns: {list(df.columns)}\nDtypes:\n{df.dtypes.to_string()}\nSample rows:\n{df.head(3).to_string()}"
 
     system_prompt = (
-        "Tum ek data analyst AI ho. User ek pandas DataFrame `df` ke baare mein "
-        "sawaal poochega (Hinglish ya English mein). Tumhe SIRF valid Python "
-        "pandas code dena hai jo `result` variable mein answer store kare. "
-        "Koi explanation, koi markdown fences, koi text nahi — sirf raw code."
+        "You are a data analyst AI. The user will ask a question about a "
+        "pandas DataFrame `df`. Respond with ONLY valid Python pandas code "
+        "that stores the answer in a `result` variable. No explanation, no "
+        "markdown fences, no text — just raw code."
     )
 
     user_content = f"DataFrame info:\n{schema}\n\nQuestion: {question}\n\nCode:"
@@ -222,10 +228,10 @@ def ask_question(df: pd.DataFrame, question: str) -> str:
     local_vars = {"df": df, "pd": pd}
     try:
         exec(code, {"__builtins__": {}}, local_vars)
-        result = local_vars.get("result", "Result variable nahi mila.")
+        result = local_vars.get("result", "No 'result' variable was found.")
         return f"Code executed:\n{code}\n\nAnswer:\n{result}"
     except Exception as e:
-        return f"Error aaya code chalane mein:\n{code}\n\n{traceback.format_exc()}"
+        return f"Error running code:\n{code}\n\n{traceback.format_exc()}"
 
 
 # ----------------------------------------------------------------------
@@ -250,8 +256,8 @@ def export_sql_db(df: pd.DataFrame, db_path: str) -> str:
     return (
         f"SQLite database saved: {db_path}\n"
         f"Table name: 'data'\n"
-        f"Ise SQL Workbench / DB Browser for SQLite mein khol sakte ho — "
-        f"CREATE TABLE aur data dono wahan dikhega."
+        f"You can open this in SQL Workbench / DB Browser for SQLite — "
+        f"both the CREATE TABLE statement and the data will be visible there."
     )
 
 
@@ -264,8 +270,9 @@ def run_sql(df: pd.DataFrame, sql_question: str) -> str:
 
     schema = f"Table `data` with columns: {list(df.columns)}"
     system_prompt = (
-        "Tum SQL expert ho. User ka sawaal SQLite query mein convert karo "
-        "table `data` ke against. SIRF raw SQL do, koi explanation nahi."
+        "You are a SQL expert. Convert the user's question into a SQLite "
+        "query against the table `data`. Respond with ONLY the raw SQL, "
+        "no explanation."
     )
 
     user_content = f"{schema}\n\nQuestion: {sql_question}\n\nSQL:"
@@ -287,12 +294,12 @@ def run_sql(df: pd.DataFrame, sql_question: str) -> str:
 def generate_report(df: pd.DataFrame) -> str:
     summary = df.describe(include="all").to_string()
     missing = df.isna().sum()
-    missing = missing[missing > 0].to_string() if missing.sum() > 0 else "Koi missing values nahi"
+    missing = missing[missing > 0].to_string() if missing.sum() > 0 else "No missing values"
 
     system_prompt = (
-        "Tum senior data analyst ho. Neeche diye gaye stats dekh kar 5-7 key "
-        "insights Hinglish mein do, bullet points mein. Business-relevant "
-        "patterns, anomalies, aur trends highlight karo."
+        "You are a senior data analyst. Based on the stats below, provide "
+        "5-7 key insights as bullet points. Highlight business-relevant "
+        "patterns, anomalies, and trends." + HINGLISH_INSTRUCTION
     )
 
     user_content = f"Shape: {df.shape}\n\nSummary stats:\n{summary}\n\nMissing values:\n{missing}"
@@ -409,13 +416,13 @@ def add_formula_column(df: pd.DataFrame, instruction: str, output_path: str) -> 
     formula, not a precomputed value, so it stays live in the file."""
     schema = f"Columns: {list(df.columns)}\nSample rows:\n{df.head(3).to_string()}"
     system_prompt = (
-        "Tum Excel formula expert ho. User ek naya column chahta hai jiski "
-        "value ek Excel formula se calculate ho (IF, nested IF, INDEX-MATCH, "
-        "VLOOKUP, etc. use kar sakte ho). Reply STRICTLY is JSON format mein "
-        '(sirf JSON, koi aur text nahi): {"column_name": "...", '
+        "You are an Excel formula expert. The user wants a new column whose "
+        "value is calculated by an Excel formula (you can use IF, nested IF, "
+        "INDEX-MATCH, VLOOKUP, etc). Reply STRICTLY in this JSON format "
+        '(JSON only, no other text): {"column_name": "...", '
         '"formula_template": "=IF([Salary]>100000,\\"Yes\\",\\"No\\")"} '
-        "formula_template mein column names ko [ColumnName] format mein likho "
-        "— main unhe actual Excel cell references (jaise B2) se replace kar dunga."
+        "In formula_template, write column names as [ColumnName] — "
+        "I will replace them with actual Excel cell references (e.g. B2)."
     )
     raw = call_llm(system_prompt, f"{schema}\n\nInstruction: {instruction}", max_tokens=400)
     raw = raw.replace("```json", "").replace("```", "").strip()
@@ -424,7 +431,7 @@ def add_formula_column(df: pd.DataFrame, instruction: str, output_path: str) -> 
     try:
         spec = json.loads(raw)
     except Exception as e:
-        return f"Formula spec samajh nahi aayi:\n{raw}\n\nError: {e}"
+        return f"Could not parse formula spec:\n{raw}\n\nError: {e}"
 
     col_name = spec["column_name"]
     template = spec["formula_template"]
@@ -465,12 +472,12 @@ def add_conditional_formatting(df: pd.DataFrame, instruction: str, output_path: 
     on a natural-language rule, e.g. 'highlight Sales below 0 in red'."""
     schema = f"Columns: {list(df.columns)}"
     system_prompt = (
-        "Tum Excel conditional-formatting expert ho. Reply STRICTLY JSON mein "
-        '(sirf JSON): {"column": "Sales", "rule_type": "cell_is", '
+        "You are an Excel conditional-formatting expert. Reply STRICTLY in "
+        'JSON (JSON only): {"column": "Sales", "rule_type": "cell_is", '
         '"operator": "lessThan", "value": 0, "color": "FFC7CE"} '
-        'rule_type "cell_is" (operator: lessThan/greaterThan/equal, value chahiye) '
-        'ya "color_scale" (koi value nahi chahiye) ho sakta hai. color ek 6-char '
-        "hex bina # ke."
+        'rule_type can be "cell_is" (needs operator: lessThan/greaterThan/equal, '
+        'and value) or "color_scale" (no value needed). color is a 6-char '
+        "hex code without the #."
     )
     raw = call_llm(system_prompt, f"{schema}\n\nInstruction: {instruction}", max_tokens=300)
     raw = raw.replace("```json", "").replace("```", "").strip()
@@ -479,7 +486,7 @@ def add_conditional_formatting(df: pd.DataFrame, instruction: str, output_path: 
     try:
         spec = json.loads(raw)
     except Exception as e:
-        return f"Rule samajh nahi aayi:\n{raw}\n\nError: {e}"
+        return f"Could not parse formatting rule:\n{raw}\n\nError: {e}"
 
     wb = Workbook()
     ws = wb.active
@@ -517,8 +524,8 @@ def add_data_validation(df: pd.DataFrame, instruction: str, output_path: str) ->
     Status to Active/Inactive/Pending."""
     schema = f"Columns: {list(df.columns)}\nSample:\n{df.head(3).to_string()}"
     system_prompt = (
-        "Tum Excel data-validation expert ho. Reply STRICTLY JSON mein "
-        '(sirf JSON): {"column": "Status", "options": ["Active","Inactive","Pending"]}'
+        "You are an Excel data-validation expert. Reply STRICTLY in JSON "
+        '(JSON only): {"column": "Status", "options": ["Active","Inactive","Pending"]}'
     )
     raw = call_llm(system_prompt, f"{schema}\n\nInstruction: {instruction}", max_tokens=300)
     raw = raw.replace("```json", "").replace("```", "").strip()
@@ -527,7 +534,7 @@ def add_data_validation(df: pd.DataFrame, instruction: str, output_path: str) ->
     try:
         spec = json.loads(raw)
     except Exception as e:
-        return f"Validation spec samajh nahi aayi:\n{raw}\n\nError: {e}"
+        return f"Could not parse validation spec:\n{raw}\n\nError: {e}"
 
     wb = Workbook()
     ws = wb.active
@@ -558,7 +565,7 @@ def edit_excel_in_place(source_path: str, df: pd.DataFrame, output_path: str) ->
     tabs) and updates the main data sheet with the current (possibly
     cleaned) DataFrame, then saves as a new file so the original is safe."""
     if not source_path.lower().endswith((".xlsx", ".xls")):
-        return "Ye command sirf tab kaam karta hai jab original file Excel (.xlsx) ho."
+        return "This command only works when the original file is an Excel (.xlsx) file."
 
     wb = load_workbook(source_path)
     ws = wb.active  # first/main sheet
@@ -605,12 +612,13 @@ def generate_powerbi_guide(df: pd.DataFrame, output_path: str) -> str:
     schema = f"Columns: {list(df.columns)}\nNumeric: {numeric_cols}\nCategorical: {cat_cols}\nSample:\n{df.head(3).to_string()}"
 
     system_prompt = (
-        "Tum Power BI expert consultant ho. Data schema dekh kar do:\n"
-        "1. 5-8 useful DAX measures (copy-paste ready code blocks, har ek ka short explanation)\n"
-        "2. Step-by-step guide (Hinglish) ki Power BI Desktop mein is data se dashboard kaise banaye — "
-        "konse visuals (card, bar, line, slicer, matrix) kahan lagayein, konsa column kahan drag karein\n"
-        "3. Layout suggestion (top row KPIs, middle charts, bottom filters jaisa)\n"
-        "Markdown format mein do, clear headers ke saath."
+        "You are a Power BI consultant. Based on the data schema, provide:\n"
+        "1. 5-8 useful DAX measures (copy-paste ready code blocks, each with a short explanation)\n"
+        "2. A step-by-step guide on how to build a dashboard from this data in Power BI Desktop — "
+        "which visuals (card, bar, line, slicer, matrix) to place where, which column to drag where\n"
+        "3. A layout suggestion (e.g. top row KPIs, middle charts, bottom filters)\n"
+        "Respond in Markdown format with clear headers, in English "
+        "(this guide is saved to a file, so it should stay in professional English)."
     )
 
     guide = call_llm(system_prompt, f"Data schema:\n{schema}", max_tokens=1500)
