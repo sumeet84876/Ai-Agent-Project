@@ -52,6 +52,42 @@ def call_llm(system_prompt: str, user_content: str, max_tokens: int = 800) -> st
     )
     return response.text.strip()
 
+
+def generate_and_execute_with_retry(system_prompt: str, user_content: str, executor_fn,
+                                     max_attempts: int = 3, max_tokens: int = 500):
+    """Generic self-correcting agent loop: Analyze (context passed in) ->
+    Plan (LLM generates code) -> Execute (executor_fn runs it) ->
+    Evaluate (did it succeed?) -> Adapt (feed the error back and regenerate)
+    -> repeat until success or max_attempts reached.
+
+    executor_fn(code) must return (success: bool, result_or_error_message).
+    Returns (final_code, result_or_error, success: bool, attempts_used: int).
+    """
+    code = None
+    last_error = None
+
+    for attempt in range(1, max_attempts + 1):
+        if attempt == 1:
+            code = call_llm(system_prompt, user_content, max_tokens=max_tokens)
+        else:
+            retry_content = (
+                f"{user_content}\n\n"
+                f"--- Previous attempt (#{attempt - 1}) ---\n{code}\n\n"
+                f"--- That attempt failed with this error ---\n{last_error}\n\n"
+                f"Fix the code so it works correctly. Return ONLY the corrected code, "
+                f"nothing else."
+            )
+            code = call_llm(system_prompt, retry_content, max_tokens=max_tokens)
+
+        code = code.replace("```python", "").replace("```", "").replace("```sql", "").strip()
+
+        success, result = executor_fn(code)
+        if success:
+            return code, result, True, attempt
+        last_error = result
+
+    return code, last_error, False, max_attempts
+
 # ----------------------------------------------------------------------
 # 0. UNIVERSAL FILE READER (csv, xlsx, pdf, docx, pptx)
 # ----------------------------------------------------------------------
@@ -183,7 +219,9 @@ def auto_clean(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
 # 2b. CUSTOM CLEANING (natural language instruction -> permanent df change)
 # ----------------------------------------------------------------------
 def custom_clean(df: pd.DataFrame, instruction: str):
-    """Applies a user-described cleaning instruction and returns the UPDATED df."""
+    """Applies a user-described cleaning instruction and returns the UPDATED df.
+    Uses a self-correcting loop: if the generated code errors out, the error
+    is fed back to the model so it can fix and retry (up to 3 attempts)."""
     schema = f"Columns: {list(df.columns)}\nDtypes:\n{df.dtypes.to_string()}\nSample rows:\n{df.head(3).to_string()}"
 
     system_prompt = (
@@ -193,24 +231,35 @@ def custom_clean(df: pd.DataFrame, instruction: str):
         "back in the `df` variable (e.g. df = df[...] or df['col'] = ...). "
         "No explanation, no markdown fences, no text — just raw code."
     )
-
     user_content = f"DataFrame info:\n{schema}\n\nCleaning instruction: {instruction}\n\nCode:"
-    code = call_llm(system_prompt, user_content, max_tokens=400)
-    code = code.replace("```python", "").replace("```", "").strip()
 
-    local_vars = {"df": df.copy(), "pd": pd}
-    try:
-        exec(code, {"__builtins__": {}}, local_vars)
-        new_df = local_vars.get("df", df)
-        return new_df, f"Cleaning applied:\n{code}\n\nNew shape: {new_df.shape}"
-    except Exception as e:
-        return df, f"Error running cleaning code:\n{code}\n\n{e}"
+    def executor(code: str):
+        local_vars = {"df": df.copy(), "pd": pd}
+        try:
+            exec(code, {"__builtins__": {}}, local_vars)
+            new_df = local_vars.get("df", df)
+            return True, new_df
+        except Exception as e:
+            return False, str(e)
+
+    code, result, success, attempts = generate_and_execute_with_retry(
+        system_prompt, user_content, executor, max_attempts=3, max_tokens=400
+    )
+
+    if success:
+        note = f" (fixed after {attempts} attempts)" if attempts > 1 else ""
+        return result, f"Cleaning applied{note}:\n{code}\n\nNew shape: {result.shape}"
+    else:
+        return df, f"Could not complete cleaning after {attempts} attempts.\nLast code:\n{code}\n\nLast error:\n{result}"
 
 
 # ----------------------------------------------------------------------
 # 2. NATURAL LANGUAGE -> PANDAS CODE (Q&A over data)
 # ----------------------------------------------------------------------
 def ask_question(df: pd.DataFrame, question: str) -> str:
+    """Answers a natural-language question about the data using a
+    self-correcting loop: if the generated code errors (or produces no
+    result), the error is fed back so the model can fix and retry."""
     schema = f"Columns: {list(df.columns)}\nDtypes:\n{df.dtypes.to_string()}\nSample rows:\n{df.head(3).to_string()}"
 
     system_prompt = (
@@ -219,19 +268,27 @@ def ask_question(df: pd.DataFrame, question: str) -> str:
         "that stores the answer in a `result` variable. No explanation, no "
         "markdown fences, no text — just raw code."
     )
-
     user_content = f"DataFrame info:\n{schema}\n\nQuestion: {question}\n\nCode:"
-    code = call_llm(system_prompt, user_content, max_tokens=500)
-    code = code.replace("```python", "").replace("```", "").strip()
 
-    # Sandbox execution with restricted scope
-    local_vars = {"df": df, "pd": pd}
-    try:
-        exec(code, {"__builtins__": {}}, local_vars)
-        result = local_vars.get("result", "No 'result' variable was found.")
-        return f"Code executed:\n{code}\n\nAnswer:\n{result}"
-    except Exception as e:
-        return f"Error running code:\n{code}\n\n{traceback.format_exc()}"
+    def executor(code: str):
+        local_vars = {"df": df.copy(), "pd": pd}
+        try:
+            exec(code, {"__builtins__": {}}, local_vars)
+            if "result" not in local_vars:
+                return False, "Code ran but did not set a 'result' variable."
+            return True, local_vars["result"]
+        except Exception:
+            return False, traceback.format_exc()
+
+    code, result, success, attempts = generate_and_execute_with_retry(
+        system_prompt, user_content, executor, max_attempts=3, max_tokens=500
+    )
+
+    if success:
+        note = f" (fixed after {attempts} attempts)" if attempts > 1 else ""
+        return f"Code executed{note}:\n{code}\n\nAnswer:\n{result}"
+    else:
+        return f"Could not answer after {attempts} attempts.\nLast code:\n{code}\n\nLast error:\n{result}"
 
 
 # ----------------------------------------------------------------------
@@ -265,6 +322,9 @@ def export_sql_db(df: pd.DataFrame, db_path: str) -> str:
 # 3. SQL SUPPORT (load df into SQLite, run SQL queries)
 # ----------------------------------------------------------------------
 def run_sql(df: pd.DataFrame, sql_question: str) -> str:
+    """Converts a natural-language question into SQL and runs it, using a
+    self-correcting loop: if the query errors out, the error is fed back
+    so the model can fix and retry."""
     conn = sqlite3.connect(":memory:")
     df.to_sql("data", conn, index=False, if_exists="replace")
 
@@ -274,18 +334,25 @@ def run_sql(df: pd.DataFrame, sql_question: str) -> str:
         "query against the table `data`. Respond with ONLY the raw SQL, "
         "no explanation."
     )
-
     user_content = f"{schema}\n\nQuestion: {sql_question}\n\nSQL:"
-    sql = call_llm(system_prompt, user_content, max_tokens=300)
-    sql = sql.replace("```sql", "").replace("```", "").strip()
 
-    try:
-        result_df = pd.read_sql_query(sql, conn)
-        return f"SQL Query:\n{sql}\n\nResult:\n{result_df.to_string()}"
-    except Exception as e:
-        return f"SQL Error:\n{sql}\n\n{e}"
-    finally:
-        conn.close()
+    def executor(sql: str):
+        try:
+            result_df = pd.read_sql_query(sql, conn)
+            return True, result_df
+        except Exception as e:
+            return False, str(e)
+
+    sql, result, success, attempts = generate_and_execute_with_retry(
+        system_prompt, user_content, executor, max_attempts=3, max_tokens=300
+    )
+    conn.close()
+
+    if success:
+        note = f" (fixed after {attempts} attempts)" if attempts > 1 else ""
+        return f"SQL Query{note}:\n{sql}\n\nResult:\n{result.to_string()}"
+    else:
+        return f"Could not run query after {attempts} attempts.\nLast SQL:\n{sql}\n\nLast error:\n{result}"
 
 
 # ----------------------------------------------------------------------
