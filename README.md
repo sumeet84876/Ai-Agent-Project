@@ -29,31 +29,7 @@ This project explores how an AI assistant can automate repetitive parts of a dat
 - python-docx
 - python-pptx
 - pypdf
-- **Automated Data Cleaning** — detects and reports duplicate rows, missing values, inconsistent text casing, and whitespace issues on load
-- **Custom Cleaning via Natural Language** — describe a cleaning rule in plain English and the agent generates and applies the corresponding pandas code
-- **Self-Correcting Agentic Loop** — code-generation tasks (Q&A, cleaning, SQL) follow an Analyze → Plan → Execute → Evaluate → Adapt cycle: if generated code fails, the error is fed back to the model, which retries with a corrected version (up to 3 attempts)
-- **Natural Language Q&A** — ask questions about your data or documents and get direct answers, no code required
-- **SQL Query Generation** — describe what you want in English, get a working SQL query and its result
-- **Persistent SQLite Export** — save your dataset as a real `.db` file that opens in any SQL client (SQL Workbench, DB Browser for SQLite, etc.)
-- **Excel Dashboard Generation** — creates a multi-sheet workbook with live formulas (SUM, AVERAGE, MAX, MIN) and charts, not hardcoded values
-- **Advanced Excel Features**:
-  - Formula-driven columns (nested IF, INDEX-MATCH, VLOOKUP)
-  - Conditional formatting (cell rules, color scales)
-  - Data validation (dropdown lists)
-  - In-place editing of existing Excel files that preserves other sheets/tabs
-- **Power BI Integration** — exports clean, typed data ready for import, plus a generated guide with DAX measures and dashboard-building steps
-- **Automated EDA Reports** — key insights generated from summary statistics
-- **Bilingual Output (Hinglish)** — reports and document Q&A responses are generated in Hinglish (Hindi + English, Roman script) for accessibility to the Indian developer/analyst market, while the codebase and all saved output files remain in professional English
-
-## Tech Stack
-
-- **Python 3.11+**
-- **Google Gemini API** (`google-genai`) — natural language understanding and code generation
-- **pandas** — data manipulation and cleaning
-- **openpyxl** — Excel file generation, formulas, charts, conditional formatting, data validation
-- **SQLite** — in-memory and persistent SQL query execution
-- **python-docx**, **python-pptx**, **pypdf** — multi-format document parsing
-- **Streamlit** — browser-based web interface
+- Streamlit
 
 ## Setup
 
@@ -92,7 +68,6 @@ python agent.py your_data.csv        # also supports .xlsx, .pdf, .docx, .pptx
 ### Web interface (Streamlit)
 
 ```bash
-pip install streamlit
 streamlit run app.py
 ```
 
@@ -103,13 +78,6 @@ Opens a browser-based UI with:
 - Download button for the most recently generated file
 
 The web app reuses all the logic from `agent.py` directly — no duplicated code.
-
-
-```bash
-python agent.py your_data.csv
-```
-
-The agent also supports `.xlsx`, `.pdf`, `.docx`, and `.pptx` files.
 
 ## Commands
 
@@ -132,18 +100,6 @@ The agent also supports `.xlsx`, `.pdf`, `.docx`, and `.pptx` files.
 
 ## Design Notes
 
-<<<<<<< HEAD
-- **Non-destructive by default** — operations write to new outputs instead of overwriting source data.
-- **Formula-driven outputs** — Excel calculations use live formulas instead of hardcoded results where appropriate.
-- **Centralized LLM wrapper** — model calls are routed through a single function to make provider changes easier.
-
-## Limitations
-
-- Native Power BI `.pbix` files cannot be generated directly; the agent produces clean exports and a DAX/dashboard guide.
-- Native Excel PivotTable objects are not generated; equivalent summary tables are produced instead.
-- Excel VBA/macros are not generated.
-- The natural-language code execution path uses restricted `exec()` and is intended for personal/local use. A production multi-user deployment would require stronger sandboxing.
-=======
 - **Non-destructive by default** — every operation writes to a new file rather than overwriting the source, so the original data is never at risk.
 - **Formulas over hardcoded values** — Excel outputs (dashboards, formula columns) use live formulas so they stay correct if the underlying data changes.
 - **Provider-agnostic LLM wrapper** — all LLM calls go through a single `call_llm()` function, making it straightforward to swap providers if needed.
@@ -156,20 +112,15 @@ The agent also supports `.xlsx`, `.pdf`, `.docx`, and `.pptx` files.
 - Does not support Excel macros/VBA generation.
 - `exec()` is used with restricted builtins for natural-language-to-code execution; this is adequate for personal/local use but would need additional sandboxing (e.g. subprocess isolation) for a multi-user or production deployment.
 - The self-correction loop retries up to 3 times; persistent failures (e.g. a genuinely unanswerable question) still surface as an error after the final attempt.
->>>>>>> 58806ff (Add Streamlit interface and improve agent workflow)
 
 ## Development Note
 
-<<<<<<< HEAD
 This is an **AI-assisted learning project**. Claude was used extensively during development for code generation, debugging, refactoring, and implementation guidance. The project requirements, feature direction, testing, and final integration were reviewed and directed by the author.
 
 The purpose of the project is to learn how LLMs can be integrated into practical data-analysis workflows rather than to present the implementation as entirely hand-written code.
 
 ## Future Improvements
 
-- Web interface using Streamlit or Gradio
-=======
->>>>>>> 58806ff (Add Streamlit interface and improve agent workflow)
 - Multi-file joins and cross-file analysis
 - Natural-language chart generation
 - Write support for Word and PowerPoint files
