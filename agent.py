@@ -20,7 +20,6 @@ import sys
 import io
 import sqlite3
 import traceback
-import subprocess
 import pandas as pd
 from google import genai
 from openpyxl import Workbook, load_workbook
@@ -35,11 +34,35 @@ from pypdf import PdfReader
 
 MODEL = "gemini-flash-latest"  # always points to current Gemini Flash model
 
-# The agent's code, comments, and error messages are in English for
-# readability and portfolio presentation. Conversational replies (reports,
-# document answers, guides) are generated in Hinglish for accessibility,
-# per this instruction appended to relevant prompts.
+# Language rule: ONLY free-form chat replies (general questions, document
+# Q&A) are in Hinglish. Everything else — reports, guides, formulas, SQL,
+# error messages, code — stays in English, since those are meant to be
+# read/reused/shown professionally, not just chatted about.
 HINGLISH_INSTRUCTION = " Respond in Hinglish (a natural mix of Hindi and English, written in Latin/Roman script)."
+NO_FILLER_INSTRUCTION = " Be direct and concise. Do not use filler phrases like 'Great question!', 'Sure, I'd be happy to help', or unnecessary pleasantries — just answer."
+
+# Safe builtins for the exec() sandbox used by custom_clean/ask_question.
+# An EMPTY builtins dict (the original approach) blocks even harmless,
+# extremely common calls like len(), sum(), round() that Gemini generates
+# constantly in normal pandas code — causing frequent, confusing failures.
+# This allowlist keeps dangerous stuff (open, __import__, eval, exec, input,
+# exit) out while letting normal data-manipulation code actually run.
+_SAFE_BUILTIN_NAMES = [
+    "len", "sum", "min", "max", "round", "abs", "sorted", "reversed",
+    "enumerate", "range", "zip", "map", "filter", "list", "dict", "set",
+    "tuple", "str", "int", "float", "bool", "isinstance", "type",
+    "True", "False", "None", "print",
+]
+SAFE_BUILTINS = {name: getattr(__builtins__, name, None) if not isinstance(__builtins__, dict)
+                  else __builtins__.get(name) for name in _SAFE_BUILTIN_NAMES}
+SAFE_BUILTINS = {k: v for k, v in SAFE_BUILTINS.items() if v is not None}
+SAFE_BUILTINS.update({"True": True, "False": False, "None": None})
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+UPLOADS_DIR = os.path.join(BASE_DIR, "uploads")
+OUTPUTS_DIR = os.path.join(BASE_DIR, "outputs")
+os.makedirs(UPLOADS_DIR, exist_ok=True)
+os.makedirs(OUTPUTS_DIR, exist_ok=True)
 
 client = genai.Client()  # reads GEMINI_API_KEY from environment
 
@@ -139,7 +162,7 @@ def load_any_file(filepath: str):
 def ask_about_text(text: str, question: str) -> str:
     """NL Q&A over non-tabular documents (PDF/Word/PPT)."""
     truncated = text[:15000]  # keep prompt reasonable
-    system_prompt = "You are a document analyst AI. Answer the user's question clearly, based on the document content provided." + HINGLISH_INSTRUCTION
+    system_prompt = "You are a document analyst AI. Answer the user's question clearly, based on the document content provided." + HINGLISH_INSTRUCTION + NO_FILLER_INSTRUCTION
     user_content = f"Document content:\n{truncated}\n\nQuestion: {question}"
     return call_llm(system_prompt, user_content)
 
@@ -236,7 +259,7 @@ def custom_clean(df: pd.DataFrame, instruction: str):
     def executor(code: str):
         local_vars = {"df": df.copy(), "pd": pd}
         try:
-            exec(code, {"__builtins__": {}}, local_vars)
+            exec(code, {"__builtins__": SAFE_BUILTINS}, local_vars)
             new_df = local_vars.get("df", df)
             return True, new_df
         except Exception as e:
@@ -273,7 +296,7 @@ def ask_question(df: pd.DataFrame, question: str) -> str:
     def executor(code: str):
         local_vars = {"df": df.copy(), "pd": pd}
         try:
-            exec(code, {"__builtins__": {}}, local_vars)
+            exec(code, {"__builtins__": SAFE_BUILTINS}, local_vars)
             if "result" not in local_vars:
                 return False, "Code ran but did not set a 'result' variable."
             return True, local_vars["result"]
@@ -365,12 +388,16 @@ def generate_report(df: pd.DataFrame) -> str:
 
     system_prompt = (
         "You are a senior data analyst. Based on the stats below, provide "
-        "5-7 key insights as bullet points. Highlight business-relevant "
-        "patterns, anomalies, and trends." + HINGLISH_INSTRUCTION
+        "5-7 key insights as bullet points, plus a short 'Issues found' "
+        "section listing data quality problems (missing values, outliers, "
+        "inconsistent types) and a 'Suggested changes' section with concrete "
+        "fixes. Highlight business-relevant patterns, anomalies, and trends. "
+        "Respond in English — this report is a professional document, not "
+        "a chat reply." + NO_FILLER_INSTRUCTION
     )
 
     user_content = f"Shape: {df.shape}\n\nSummary stats:\n{summary}\n\nMissing values:\n{missing}"
-    return call_llm(system_prompt, user_content, max_tokens=600)
+    return call_llm(system_prompt, user_content, max_tokens=800)
 
 
 # ----------------------------------------------------------------------
@@ -460,16 +487,8 @@ def generate_excel_dashboard(df: pd.DataFrame, output_path: str) -> str:
         summary.add_chart(line, "D2")
 
     wb.save(output_path)
-
-    # Recalculate formulas via LibreOffice
-    try:
-        subprocess.run(
-            ["python", "/mnt/skills/public/xlsx/scripts/recalc.py", output_path, "30"],
-            check=False, capture_output=True, timeout=40
-        )
-    except Exception:
-        pass
-
+    # Note: formulas are written live (not pre-computed) — Excel/LibreOffice
+    # recalculates them automatically the first time the file is opened.
     return f"Dashboard saved: {output_path}"
 
 
@@ -523,14 +542,6 @@ def add_formula_column(df: pd.DataFrame, instruction: str, output_path: str) -> 
         ws.append(row_values)
 
     wb.save(output_path)
-    try:
-        subprocess.run(
-            ["python", "/mnt/skills/public/xlsx/scripts/recalc.py", output_path, "30"],
-            check=False, capture_output=True, timeout=40
-        )
-    except Exception:
-        pass
-
     return f"Formula column '{col_name}' added, file saved: {output_path}\nFormula used: {template}"
 
 
@@ -686,12 +697,97 @@ def generate_powerbi_guide(df: pd.DataFrame, output_path: str) -> str:
         "3. A layout suggestion (e.g. top row KPIs, middle charts, bottom filters)\n"
         "Respond in Markdown format with clear headers, in English "
         "(this guide is saved to a file, so it should stay in professional English)."
+        + NO_FILLER_INSTRUCTION
     )
 
     guide = call_llm(system_prompt, f"Data schema:\n{schema}", max_tokens=1500)
     with open(output_path, "w", encoding="utf-8") as f:
         f.write(guide)
     return f"Power BI guide saved: {output_path}\n\n{guide}"
+
+
+# ----------------------------------------------------------------------
+# 9. INTENT DETECTION + GENERAL Q&A (lets the chat understand plain
+#    instructions without needing prefixes like 'clean:' / 'sql:')
+# ----------------------------------------------------------------------
+VALID_INTENTS = {
+    "report", "clean", "ask", "sql", "save", "sql_export", "dashboard",
+    "formula", "format", "validate", "edit_excel", "powerbi_export",
+    "powerbi_guide", "excel_question", "sql_question", "powerbi_question",
+    "general_chat",
+}
+
+
+def detect_intent(message: str, has_active_file: bool) -> str:
+    """Classifies a free-text chat message into one pipeline action, so the
+    user can just type an instruction in plain language instead of using
+    prefixes. Falls back to 'general_chat' on any classification failure."""
+    system_prompt = (
+        "Classify the user's message into exactly ONE of these intents:\n"
+        "- report: wants a data quality / EDA report on the uploaded file\n"
+        "- clean: wants the data cleaned/modified based on a described rule\n"
+        "- ask: wants a specific answer/calculation from the data itself\n"
+        "- sql: wants to query the data using SQL / a data question suited to SQL\n"
+        "- save: wants the current (cleaned) data saved as CSV/Excel\n"
+        "- sql_export: wants the data exported as a standalone SQLite .db file\n"
+        "- dashboard: wants an Excel dashboard with charts built\n"
+        "- formula: wants a new Excel column driven by a formula\n"
+        "- format: wants conditional formatting applied in Excel\n"
+        "- validate: wants a dropdown / data validation added in Excel\n"
+        "- edit_excel: wants the original Excel file updated in place\n"
+        "- powerbi_export: wants a Power BI-ready data export\n"
+        "- powerbi_guide: wants DAX measures / a Power BI dashboard-building guide\n"
+        "- excel_question: a general Excel question NOT about the uploaded file's data "
+        "(e.g. 'how does VLOOKUP work')\n"
+        "- sql_question: a general SQL question NOT about the uploaded file's data\n"
+        "- powerbi_question: a general Power BI / DAX question NOT about the uploaded file's data\n"
+        "- general_chat: anything else, small talk, or questions about the agent itself\n"
+        "Reply with ONLY the intent word, nothing else - no punctuation, no explanation."
+    )
+    user_content = f"An uploaded file is currently loaded: {has_active_file}\nMessage: {message}"
+    try:
+        raw = call_llm(system_prompt, user_content, max_tokens=15)
+        intent = raw.strip().lower().split()[0].strip(".,:;") if raw.strip() else "general_chat"
+    except Exception:
+        return "general_chat"
+    return intent if intent in VALID_INTENTS else "general_chat"
+
+
+def answer_excel_question(question: str) -> str:
+    system_prompt = (
+        "You are an Excel expert. Answer precisely and technically, with exact "
+        "formula syntax where relevant (e.g. =VLOOKUP(...), =XLOOKUP(...), "
+        "=SUMIFS(...)). Respond in English." + NO_FILLER_INSTRUCTION
+    )
+    return call_llm(system_prompt, question, max_tokens=500)
+
+
+def answer_sql_question(question: str) -> str:
+    system_prompt = (
+        "You are a SQL expert. Answer precisely and technically, with SQL "
+        "code examples where relevant. Respond in English." + NO_FILLER_INSTRUCTION
+    )
+    return call_llm(system_prompt, question, max_tokens=500)
+
+
+def answer_powerbi_question(question: str) -> str:
+    system_prompt = (
+        "You are a Power BI and DAX expert. Answer precisely and technically, "
+        "with DAX or Power Query M code where relevant. Respond in English."
+        + NO_FILLER_INSTRUCTION
+    )
+    return call_llm(system_prompt, question, max_tokens=500)
+
+
+def chat_reply(message: str) -> str:
+    """General conversational fallback - the ONLY place Hinglish + a
+    friendlier tone is appropriate, since this is plain chat, not a
+    generated artifact."""
+    system_prompt = (
+        "You are a data analyst assistant. Answer the user's message helpfully."
+        + HINGLISH_INSTRUCTION + NO_FILLER_INSTRUCTION
+    )
+    return call_llm(system_prompt, message, max_tokens=400)
 
 
 # ----------------------------------------------------------------------
