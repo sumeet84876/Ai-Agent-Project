@@ -170,28 +170,28 @@ for msg in history:
                 )
 
 # ----------------------------------------------------------------------
-# "+" plugin menu + file uploader
+# "+" menu — everything (upload + plugins) lives inside this ONE control,
+# same as attaching a file / picking a tool in Claude's chat box.
 # ----------------------------------------------------------------------
-col_plus, col_upload = st.columns([1, 4])
-with col_plus:
-    with st.popover("➕"):
-        st.caption("Plugins")
-        if st.button("📊 Excel Dashboard", use_container_width=True):
-            st.session_state.forced_mode = "dashboard"
-        if st.button("🗄️ SQL Query", use_container_width=True):
-            st.session_state.forced_mode = "sql" if st.session_state.kind == "table" else "sql_question"
-        if st.button("📈 Power BI Guide & DAX", use_container_width=True):
-            st.session_state.forced_mode = "powerbi_guide" if st.session_state.kind == "table" else "powerbi_question"
-        if st.session_state.forced_mode:
-            st.success(f"Mode set: {st.session_state.forced_mode}")
-            if st.button("Clear mode"):
-                st.session_state.forced_mode = None
-
-with col_upload:
+with st.popover("➕"):
+    st.caption("Upload a file")
     uploaded = st.file_uploader(
         "Upload file", type=["csv", "xlsx", "xls", "pdf", "docx", "pptx"],
         label_visibility="collapsed",
     )
+
+    st.divider()
+    st.caption("Plugins")
+    if st.button("📊 Excel Dashboard", use_container_width=True):
+        st.session_state.forced_mode = "dashboard"
+    if st.button("🗄️ SQL Query", use_container_width=True):
+        st.session_state.forced_mode = "sql"
+    if st.button("📈 Power BI Guide & DAX", use_container_width=True):
+        st.session_state.forced_mode = "powerbi_guide"
+    if st.session_state.forced_mode:
+        st.success(f"Mode set: {st.session_state.forced_mode}")
+        if st.button("Clear mode"):
+            st.session_state.forced_mode = None
 
 if uploaded is not None and st.session_state.uploaded_name != uploaded.name:
     upload_id = uuid.uuid4().hex[:6]
@@ -254,6 +254,14 @@ if user_input:
     else:
         with st.spinner("Understanding..."):
             intent = agent.detect_intent(user_input, has_active_file=has_file)
+
+    # Re-check file availability at DISPATCH time (not at the moment the
+    # plugin button was clicked) — handles the case where the user picks a
+    # plugin before uploading a file, then uploads it afterwards.
+    if intent == "sql" and st.session_state.kind != "table":
+        intent = "sql_question"
+    if intent == "powerbi_guide" and st.session_state.kind != "table":
+        intent = "powerbi_question"
 
     reply_text = ""
     file_ref = None
